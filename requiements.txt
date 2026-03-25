@@ -1,0 +1,6 @@
+streamlit
+google-generativeai
+gTTS
+pandas
+google-api-python-client
+google-auth
