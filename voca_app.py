@@ -99,7 +99,7 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# --- [2. 사이드바: AI 똑똑한 단어 복사기 (우선순위 3 적용)] ---
+# --- [2. 사이드바: AI 똑똑한 단어 복사기] ---
 with st.sidebar:
     st.title("🤖 AI 단어 추출기 V2")
     input_text = st.text_area("주제 및 본문 입력", placeholder="예) performance marketing 기사 복붙", height=150)
@@ -127,5 +127,129 @@ with st.sidebar:
                 2. 예문 기입: '음매'님의 상황(야탑-정자 통근, 마케터 직무 등)에 맞춘 초개인화된 예문 생성.
                 3. 마크다운 없이 순수 JSON 배열만 출력. 칼럼명: "단어", "뜻", "예문"
                 """
+                
+                try:
+                    response = model.generate_content(prompt)
+                    # 마크다운 껍데기 강제 제거 방어 로직
+                    clean_text = re.sub(r"```[a-zA-Z]*\n", "", response.text)
+                    clean_text = clean_text.replace("```", "").strip()
+                    new_words = json.loads(clean_text)
+                    
+                    today_str = str(datetime.now().date())
+                    sheet_data = [[w["단어"], w["뜻"], w["예문"], 0, today_str, 0] for w in new_words]
+                    
+                    st.session_state.sh.spreadsheets().values().append(
+                        spreadsheetId=SPREADSHEET_ID, range="'Voca'!A1",
+                        valueInputOption="RAW", body={'values': sheet_data}
+                    ).execute()
+                    
+                    st.success(f"🎉 성공! 새로운 단어 {len(new_words)}개가 시트에 추가되었습니다!")
+                    load_voca_data()
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"추출 실패: {e}")
 
+# --- [3. 메인 화면: DA 대시보드] ---
+st.title("📱 출퇴근 갓생 단어장 (V2.0)")
 
+# 통계 데이터 계산
+total_words = len(st.session_state.all_data)
+remains = len(st.session_state.todays_words) - st.session_state.current_idx
+
+# 오답 수(인덱스 5) 기준으로 정렬하여 가장 많이 틀린 단어 찾기
+sorted_by_mistakes = sorted(
+    [row for row in st.session_state.all_data if len(row) > 5 and str(row[5]).isdigit()], 
+    key=lambda x: int(x[5]), reverse=True
+)
+worst_word = f"{sorted_by_mistakes[0][0]} ({sorted_by_mistakes[0][5]}회)" if sorted_by_mistakes and int(sorted_by_mistakes[0][5]) > 0 else "없음 갓벽!"
+
+st.markdown("---")
+c1, c2, c3 = st.columns(3)
+c1.metric("📚 총 누적 단어", f"{total_words}개")
+c2.metric("🔥 오늘 남은 단어", f"{remains if not st.session_state.is_finished else 0}개")
+c3.metric("👿 최다 오답 단어", worst_word)
+st.markdown("---")
+
+# --- [4. 플래시카드 및 SRS 알고리즘 로직] ---
+words = st.session_state.todays_words
+idx = st.session_state.current_idx
+
+# 종료 화면 처리
+if st.session_state.is_finished or not words:
+    st.success("🎉 오늘 통근길 영단어 미션을 모두 클리어했습니다! 갓생 엔진에 한 발 더 다가섰네요!")
+    st.balloons()
+    if st.button("🔄 데이터 새로고침 (시트 다시 읽어오기)", use_container_width=True):
+        load_voca_data()
+        st.rerun()
+else:
+    current_word = words[idx]
+    
+    # 단어 카드
+    st.markdown(f"""
+        <div class="word-card">
+            <h5 style="color:#aaa; text-align:left; margin:0;">[단어 {idx + 1} / {len(words)}] | 현재 Lv.{current_word['level']}</h5>
+            <br>
+            <h1>{current_word['word']}</h1>
+        </div>
+    """, unsafe_allow_html=True)
+    
+    if st.button("🔊 영단어 발음 듣기", key=f"tts_w_{idx}", use_container_width=True):
+        play_audio(current_word['word'])
+        
+    st.markdown("<br>", unsafe_allow_html=True)
+    
+    # 뜻 가리기/보기 로직
+    if not st.session_state.show_meaning:
+        if st.button("🧐 뜻과 예문 보기", key=f"show_{idx}", use_container_width=True):
+            st.session_state.show_meaning = True
+            st.rerun()
+    else:
+        st.markdown(f"""
+            <div class="meaning-box">
+                <b>💡 뜻:</b><br>{current_word['meaning']}<br><br>
+                <b>✍️ 음매 맞춤형 예문:</b><br>{current_word['example']}
+            </div>
+            <br>
+        """, unsafe_allow_html=True)
+        
+        if st.button("🔊 예문 발음 듣기", key=f"tts_ex_{idx}", use_container_width=True):
+            play_audio(current_word['example'])
+            
+        st.markdown("<br>", unsafe_allow_html=True)
+        
+        # [핵심] SRS 알고리즘 업데이트 처리
+        col_correct, col_wrong = st.columns(2)
+        
+        with col_correct:
+            if st.button("⭕ 맞춤 (레벨업)", type="primary", key=f"cor_{idx}", use_container_width=True):
+                # 알고리즘: 레벨 1 증가, 복습일은 2의 레벨승만큼 뒤로 (2일, 4일, 8일...)
+                new_level = current_word['level'] + 1
+                days_to_add = 2 ** new_level 
+                new_date = str((datetime.now() + timedelta(days=days_to_add)).date())
+                
+                with st.spinner("시트 기록 중..."):
+                    update_sheet_word(current_word['row_idx'], new_level, new_date, current_word['mistakes'])
+                
+                st.session_state.show_meaning = False
+                if idx + 1 >= len(words):
+                    st.session_state.is_finished = True
+                else:
+                    st.session_state.current_idx += 1
+                st.rerun()
+                
+        with col_wrong:
+            if st.button("❌ 틀림 (초기화)", key=f"wrg_{idx}", use_container_width=True):
+                # 알고리즘: 레벨 0 초기화, 복습일은 무조건 '내일', 오답 수 +1
+                new_level = 0
+                new_date = str((datetime.now() + timedelta(days=1)).date())
+                new_mistakes = current_word['mistakes'] + 1
+                
+                with st.spinner("시트 기록 중..."):
+                    update_sheet_word(current_word['row_idx'], new_level, new_date, new_mistakes)
+                
+                st.session_state.show_meaning = False
+                if idx + 1 >= len(words):
+                    st.session_state.is_finished = True
+                else:
+                    st.session_state.current_idx += 1
+                st.rerun()
