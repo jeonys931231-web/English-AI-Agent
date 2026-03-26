@@ -79,6 +79,7 @@ with st.sidebar:
                 
                 try:
                     response = model.generate_content(prompt)
+                    clean_text = response.text.replace("```json", "").replace("```", "").strip()
                     new_words = json.loads(response.text.strip())
                     
                     if st.session_state.sh is None:
